@@ -14,14 +14,21 @@ const initSocket = (io) => {
         });
     });
 
+    let onlineCount = 0;
+    
     io.on('connection', (socket) => {
-        console.log(`New connection: ${socket.id}`);
+        onlineCount++;
+        io.emit('onlineCount', onlineCount); 
+        socket.emit('onlineCount', onlineCount); // Immediate update for this socket
+        console.log(`New connection: ${socket.id} (Online: ${onlineCount})`);
 
         handleMatchmaking(io, socket);
         handleSignaling(io, socket);
 
         socket.on('disconnect', () => {
-            console.log(`User disconnected: ${socket.id}`);
+            onlineCount = Math.max(0, onlineCount - 1);
+            io.emit('onlineCount', onlineCount);
+            console.log(`User disconnected: ${socket.id} (Online: ${onlineCount})`);
         });
     });
 };

@@ -7,10 +7,13 @@ require('dotenv').config();
 const app = express();
 const server = http.createServer(app);
 
+// Global stats tracker
+let onlineCount = 0;
+
 // Determine allowed origins for CORS
 const allowedOrigins = process.env.FRONTEND_URL
     ? process.env.FRONTEND_URL.split(',').map(o => o.trim())
-    : ['http://localhost:3000'];
+    : ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173']; // Common dev ports
 
 const io = new Server(server, {
     cors: {
@@ -47,6 +50,10 @@ app.use('/api/', apiLimiter);
 
 app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'CampusConnect Backend is running' });
+});
+
+app.get('/api/stats', (req, res) => {
+    res.json({ onlineCount });
 });
 
 // Health check endpoint for deployment platforms

@@ -2,7 +2,7 @@ const queue = [];
 
 const handleMatchmaking = (io, socket) => {
     socket.on('joinQueue', (userData) => {
-        socket.userData = userData; // { id, email }
+        socket.userData = userData; 
         
         if (queue.length > 0) {
             const partner = queue.shift();
@@ -11,29 +11,28 @@ const handleMatchmaking = (io, socket) => {
             if (partnerSocket) {
                 const sessionId = Math.random().toString(36).substring(7);
                 
-                // Notify both users they are matched
                 socket.emit('matched', { partner: partner.userData, sessionId, initiator: true });
                 partnerSocket.emit('matched', { partner: userData, sessionId, initiator: false });
 
-                // Link them for signaling
                 socket.partnerId = partner.socketId;
                 partnerSocket.partnerId = socket.id;
                 
                 console.log(`Matched ${socket.id} with ${partner.socketId}`);
             } else {
-                // Partner disconnected while in queue
                 queue.push({ socketId: socket.id, userData });
             }
         } else {
             queue.push({ socketId: socket.id, userData });
             console.log(`User ${socket.id} joined queue`);
         }
+        io.emit('queueCount', queue.length);
     });
 
     socket.on('leaveQueue', () => {
         const index = queue.findIndex(item => item.socketId === socket.id);
         if (index !== -1) {
             queue.splice(index, 1);
+            io.emit('queueCount', queue.length);
             console.log(`User ${socket.id} left queue`);
         }
     });
@@ -42,6 +41,7 @@ const handleMatchmaking = (io, socket) => {
         const index = queue.findIndex(item => item.socketId === socket.id);
         if (index !== -1) {
             queue.splice(index, 1);
+            io.emit('queueCount', queue.length);
         }
         
         if (socket.partnerId) {

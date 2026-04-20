@@ -39,6 +39,10 @@ export default function ChatPage() {
   const [isMicOn, setIsMicOn] = useState(true);
   const [connectionStatus, setConnectionStatus] = useState('disconnected'); // 'disconnected' | 'connecting' | 'connected'
   const [mediaError, setMediaError] = useState(null);
+  const [onlineCount, setOnlineCount] = useState(0);
+  const [queueCount, setQueueCount] = useState(0);
+  const [socketStatus, setSocketStatus] = useState('connecting'); // 'connecting' | 'connected' | 'error'
+  const [isMediaReady, setIsMediaReady] = useState(false);
 
   // Use refs for values that shouldn't trigger re-renders but must always be current
   const localStreamRef = useRef(null);
@@ -64,12 +68,14 @@ export default function ChatPage() {
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
+      setIsMediaReady(true);
       return stream;
     } catch (err) {
       console.error('Media error:', err);
       setMediaError(err.name === 'NotAllowedError'
         ? 'Camera/Mic permission denied. Please allow access and refresh.'
         : 'Could not access camera/microphone.');
+      setIsMediaReady(true);
       return null;
     }
   }, []);
@@ -123,6 +129,7 @@ export default function ChatPage() {
       if (event.streams && event.streams[0]) {
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = event.streams[0];
+          remoteVideoRef.current.play().catch(e => console.error('Video play error:', e));
         }
       }
     };
@@ -195,7 +202,7 @@ export default function ChatPage() {
     // Initiator creates and sends the offer
     if (isInitiator) {
       try {
-        const offer = await pc.createOffer();
+        const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
         await pc.setLocalDescription(offer);
         sock.emit('offer', offer);
       } catch (err) {
@@ -225,10 +232,24 @@ export default function ChatPage() {
 
     newSocket.on('connect', () => {
       console.log('Socket connected:', newSocket.id);
+      setSocketStatus('connected');
     });
 
     newSocket.on('connect_error', (err) => {
       console.error('Socket connection error:', err.message);
+      setSocketStatus('error');
+    });
+
+    newSocket.on('disconnect', () => {
+      setSocketStatus('connecting');
+    });
+
+    newSocket.on('onlineCount', (count) => {
+      setOnlineCount(count);
+    });
+
+    newSocket.on('queueCount', (count) => {
+      setQueueCount(count);
     });
 
     // Session events
@@ -278,6 +299,7 @@ export default function ChatPage() {
 
   // ─── Chat Actions ────────────────────────────────────────────────────────────
   const startChat = useCallback(() => {
+    if (!isMediaReady) return;
     const sock = socketRef.current;
     if (!sock || !sock.connected) return;
     handleCleanup(false);
@@ -285,7 +307,7 @@ export default function ChatPage() {
     setMessages([]);
     const userData = JSON.parse(localStorage.getItem('user') || '{}');
     sock.emit('joinQueue', userData);
-  }, [handleCleanup]);
+  }, [handleCleanup, isMediaReady]);
 
   const skipChat = useCallback(() => {
     const sock = socketRef.current;
@@ -348,8 +370,25 @@ export default function ChatPage() {
           <h1 className="text-xl font-bold">CampusConnect</h1>
         </div>
 
-        <div className="flex items-center gap-4">
-          {partner && (
+            <div className="flex items-center gap-3">
+            {socketStatus === 'error' && (
+              <div className="flex items-center gap-2 px-3 py-1 bg-red-500/10 border border-red-500/20 rounded-full text-xs text-red-400">
+                <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+                Server Offline
+              </div>
+            )}
+            <div className="flex items-center gap-2 px-3 py-1 bg-white/5 border border-white/10 rounded-full text-xs text-indigo-300">
+              <div className={`w-1.5 h-1.5 rounded-full ${socketStatus === 'connected' ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
+              {onlineCount} Users Online
+            </div>
+              {isMatching && (
+                <div className="flex items-center gap-2 px-3 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded-full text-xs text-indigo-400">
+                  <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-ping" />
+                  {queueCount} In Queue
+                </div>
+              )}
+            </div>
+            {partner && (
             <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-sm border ${
               connectionStatus === 'connected'
                 ? 'bg-green-500/10 border-green-500/20 text-green-400'
@@ -409,8 +448,12 @@ export default function ChatPage() {
                   ) : (
                     <div className="space-y-6">
                       <User className="w-20 h-20 text-white/5 mx-auto" />
-                      <button onClick={startChat} className="btn-primary">
-                        Start Chat
+                      <button 
+                        onClick={startChat} 
+                        className="btn-primary"
+                        disabled={!isMediaReady}
+                      >
+                        {isMediaReady ? 'Start Chat' : 'Initializing Media...'}
                       </button>
                     </div>
                   )}

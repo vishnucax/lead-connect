@@ -118,79 +118,60 @@ export default function ChatPage() {
     peerConnectionRef.current = pc;
     setConnectionStatus('connecting');
 
-    // Add local tracks
-    const stream = localStreamRef.current;
-    if (stream) {
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
-    }
-
-    // Remote stream arrives
-    pc.ontrack = (event) => {
-      if (event.streams && event.streams[0]) {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0];
-          remoteVideoRef.current.play().catch(e => console.error('Video play error:', e));
-        }
-      }
-    };
-
-    // ICE candidates
-    pc.onicecandidate = (event) => {
-      if (event.candidate && socketRef.current) {
-        socketRef.current.emit('ice-candidate', event.candidate);
-      }
-    };
-
-    // Connection state monitoring
-    pc.oniceconnectionstatechange = () => {
-      console.log('ICE state:', pc.iceConnectionState);
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-        setConnectionStatus('connected');
-      } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-        setConnectionStatus('disconnected');
-      }
-    };
-
-    // ── Signaling handlers (registered fresh each session) ──
+    // ── Signaling handlers ──
     const handleOffer = async (offer) => {
+      console.log('WebRTC: Offer received', offer.type);
       try {
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        await pc.setRemoteDescription(offer);
+        console.log('WebRTC: Remote description set (Offer)');
+        
         // Flush pending ICE candidates
+        console.log(`WebRTC: Flushing ${pendingCandidatesRef.current.length} pending candidates`);
         for (const c of pendingCandidatesRef.current) {
-          await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
+          await pc.addIceCandidate(c).catch(e => console.error('WebRTC: Error adding pending candidate', e));
         }
         pendingCandidatesRef.current = [];
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+        console.log('WebRTC: Answer created and local description set');
         sock.emit('answer', answer);
       } catch (err) {
-        console.error('Error handling offer:', err);
+        console.error('WebRTC: Error handling offer:', err);
       }
     };
 
     const handleAnswer = async (answer) => {
+      console.log('WebRTC: Answer received', answer.type);
       try {
-        if (pc.signalingState !== 'have-local-offer') return;
-        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        if (pc.signalingState !== 'have-local-offer') {
+          console.warn('WebRTC: Received answer but signaling state is:', pc.signalingState);
+          return;
+        }
+        await pc.setRemoteDescription(answer);
+        console.log('WebRTC: Remote description set (Answer)');
+        
         // Flush pending ICE candidates
         for (const c of pendingCandidatesRef.current) {
-          await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
+          await pc.addIceCandidate(c).catch(e => console.error('WebRTC: Error adding pending candidate', e));
         }
         pendingCandidatesRef.current = [];
       } catch (err) {
-        console.error('Error handling answer:', err);
+        console.error('WebRTC: Error handling answer:', err);
       }
     };
 
     const handleIceCandidate = async (candidate) => {
       try {
-        if (pc.remoteDescription?.type) {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        if (pc.remoteDescription && pc.remoteDescription.type) {
+          console.log('WebRTC: Adding ICE candidate immediately');
+          await pc.addIceCandidate(candidate);
         } else {
+          console.log('WebRTC: Buffering ICE candidate');
           pendingCandidatesRef.current.push(candidate);
         }
       } catch (err) {
-        console.error('Error adding ICE candidate:', err);
+        console.error('WebRTC: Error adding ICE candidate:', err);
       }
     };
 
@@ -199,14 +180,91 @@ export default function ChatPage() {
     sock.off('answer').on('answer', handleAnswer);
     sock.off('ice-candidate').on('ice-candidate', handleIceCandidate);
 
+    // Remote stream arrives
+    pc.ontrack = (event) => {
+      console.log('WebRTC: Incoming track event!', event.streams);
+      const [remoteStream] = event.streams;
+      if (remoteStream) {
+        console.log('WebRTC: Attaching remote stream to video element');
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStream;
+          remoteVideoRef.current.play().catch(e => {
+            console.warn('WebRTC: Remote video play failed (retrying):', e.message);
+            // Fallback: try playing again on user interaction or after a small delay
+            setTimeout(() => remoteVideoRef.current?.play().catch(() => {}), 1000);
+          });
+        }
+      } else if (remoteVideoRef.current) {
+        console.warn('WebRTC: No streams found in ontrack, creating one...');
+        // Fallback for browsers that don't provide streams in ontrack
+        if (!remoteVideoRef.current.srcObject) {
+          remoteVideoRef.current.srcObject = new MediaStream();
+        }
+        remoteVideoRef.current.srcObject.addTrack(event.track);
+        remoteVideoRef.current.play().catch(() => {});
+      }
+    };
+
+    // ICE candidates
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current) {
+        console.log('WebRTC: Local ICE candidate generated');
+        socketRef.current.emit('ice-candidate', event.candidate);
+      }
+    };
+
+    // Connection state monitoring
+    pc.oniceconnectionstatechange = () => {
+      console.log('WebRTC: ICE connection state changed to:', pc.iceConnectionState);
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        setConnectionStatus('connected');
+      } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        setConnectionStatus('disconnected');
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log('WebRTC: Peer connection state changed to:', pc.connectionState);
+    };
+
+    pc.onsignalingstatechange = () => {
+      console.log('WebRTC: Signaling state changed to:', pc.signalingState);
+    };
+
     // Initiator creates and sends the offer
     if (isInitiator) {
       try {
-        const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+        console.log('WebRTC: Initiator creating offer...');
+        // Add local tracks BEFORE creating offer
+        const stream = localStreamRef.current;
+        if (stream) {
+          console.log('WebRTC: Adding local tracks to peer connection');
+          stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        } else {
+          console.warn('WebRTC: No local stream available to add tracks');
+        }
+
+        const offer = await pc.createOffer({ 
+          offerToReceiveAudio: true, 
+          offerToReceiveVideo: true 
+        });
         await pc.setLocalDescription(offer);
-        sock.emit('offer', offer);
+        console.log('WebRTC: Local description set (Offer)');
+        
+        // Small delay to ensure receiver's signaling handlers are ready
+        setTimeout(() => {
+          console.log('WebRTC: Sending offer to partner');
+          sock.emit('offer', offer);
+        }, 100);
       } catch (err) {
-        console.error('Error creating offer:', err);
+        console.error('WebRTC: Error creating offer:', err);
+      }
+    } else {
+      // Receiver: Also add local tracks so initiator can see receiver
+      const stream = localStreamRef.current;
+      if (stream) {
+        console.log('WebRTC: Receiver adding local tracks to peer connection');
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
       }
     }
   }, [cleanupPeer]);
